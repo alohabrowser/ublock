@@ -1654,7 +1654,18 @@ builtinScriptlets.push({
     name: 'trusted-replace-node-text.js',
     requiresTrust: true,
     aliases: [
-        'trusted-rpnt.js',
+        // 'trusted-rpnt.js' alias intentionally disabled in our fork:
+        // upstream `quick-fixes.txt` ships a `www.youtube.com##+js(trusted-rpnt, ...)`
+        // rule that monkey-patches `Promise.prototype.then` / `Map.prototype.has` /
+        // `JSON.stringify` to detect ad serving. In our WebView context (custom
+        // scheme handler + content scripts) this corrupts the YouTube SPA
+        // bootstrap and the page never finishes loading. The other two aliases
+        // (`replace-node-text.js`, `rpnt.js`) are kept intact — only the
+        // `trusted-rpnt` alias used by that specific YT scriptlet is removed,
+        // which makes uBlock skip the rule (no scriptlet of that name exists)
+        // while leaving every other consumer of `trusted-replace-node-text.js`
+        // untouched.
+        // 'trusted-rpnt.js',
         'replace-node-text.js',
         'rpnt.js',
     ],
