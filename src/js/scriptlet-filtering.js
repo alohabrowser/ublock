@@ -332,17 +332,29 @@ export class ScriptletFilteringEngineEx extends ScriptletFilteringEngine {
             return;
         }
 
+        // Keep the main-world and isolated-world payloads SEPARATE so the native
+        // bridge can inject each into the correct WKContentWorld: main-world
+        // scriptlets (e.g. anti-adblock defusers that patch page globals such as
+        // `set page_params.holiday_promo true`) MUST run in the page's main world,
+        // isolated scriptlets in the extension world. Injecting both in the
+        // extension world (the previous behaviour) made main-world scriptlets set
+        // their globals in the wrong realm, so a site's own anti-adblock code never
+        // saw them. (Aloha port.)
+        const mainWorldCode = scriptletDetails.mainWorld
+            ? mainWorldInjector.assemble(hostname, scriptletDetails)
+            : '';
+        const isolatedWorldCode = scriptletDetails.isolatedWorld
+            ? isolatedWorldInjector.assemble(hostname, scriptletDetails)
+            : '';
         const contentScript = [];
-        if ( scriptletDetails.mainWorld ) {
-            contentScript.push(mainWorldInjector.assemble(hostname, scriptletDetails));
-        }
-        if ( scriptletDetails.isolatedWorld ) {
-            contentScript.push(isolatedWorldInjector.assemble(hostname, scriptletDetails));
-        }
+        if ( mainWorldCode ) { contentScript.push(mainWorldCode); }
+        if ( isolatedWorldCode ) { contentScript.push(isolatedWorldCode); }
 
         const cachedScriptletDetails = {
             bcSecret,
             code: contentScript.join('\n\n'),
+            mainWorldCode,
+            isolatedWorldCode,
             filters: scriptletDetails.filters,
         };
 
@@ -375,21 +387,40 @@ export class ScriptletFilteringEngineEx extends ScriptletFilteringEngine {
             return scriptletDetails;
         }
 
-        const contentScript = [ scriptletDetails.code ];
+        let mainWorldCode = scriptletDetails.mainWorldCode || '';
+        let isolatedWorldCode = scriptletDetails.isolatedWorldCode || '';
+        // Logger + debugger helpers ride along with the isolated-world payload.
         if ( logger.enabled ) {
-            contentScript.unshift(
-                onScriptletMessageInjector.assemble(scriptletDetails)
-            );
+            isolatedWorldCode = onScriptletMessageInjector.assemble(scriptletDetails) +
+                '\n\n' + isolatedWorldCode;
         }
         if ( µb.hiddenSettings.debugScriptletInjector ) {
-            contentScript.unshift('debugger');
+            if ( mainWorldCode ) { mainWorldCode = 'debugger\n\n' + mainWorldCode; }
+            isolatedWorldCode = 'debugger\n\n' + isolatedWorldCode;
         }
-        const code = contentScript.join('\n\n');
 
-        const isAlreadyInjected = contentScriptRegisterer.register(hostname, code);
-        if ( isAlreadyInjected !== true ) {
+        // NOTE: uBO normally registers scriptlets DECLARATIVELY via
+        // `contentScriptRegisterer.register` (browser.contentScripts.register) and
+        // skips the manual executeScript once registration resolves. Our WKWebView
+        // port's declarative content-script path does NOT run scriptlets in the page
+        // main world, so the anti-adblock defusers never reached the site. We
+        // therefore ALWAYS inject explicitly via executeScript. Duplicate execution
+        // across the multiple injectNow calls per load is prevented in-page by the
+        // `uBO_scriptletsInjected` / `uBO_isolatedScriptlets` guards in each injector.
+        // Main-world scriptlets → page main world (`world: 'MAIN'`, honoured by the
+        // native bridge, which also bypasses the page CSP); isolated → extension world.
+        if ( mainWorldCode ) {
             vAPI.tabs.executeScript(details.tabId, {
-                code,
+                code: mainWorldCode,
+                frameId: details.frameId,
+                matchAboutBlank: true,
+                runAt: 'document_start',
+                world: 'MAIN',
+            });
+        }
+        if ( isolatedWorldCode ) {
+            vAPI.tabs.executeScript(details.tabId, {
+                code: isolatedWorldCode,
                 frameId: details.frameId,
                 matchAboutBlank: true,
                 runAt: 'document_start',
